@@ -13,32 +13,29 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # =========================
-      # 1. Checkout
-      # =========================
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v5
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: 'stable'
 
-      # =========================
-      # 2. Download source ruleset
-      # =========================
+      # ==========================
+      # Download source
+      # ==========================
       - name: Download TopDirect.ruleset
         run: |
           curl -fsSL \
             https://raw.githubusercontent.com/Yumega/DaeRules/main/rawrule/TopDirect.ruleset \
             -o /tmp/TopDirect.ruleset
 
-          echo "===== Source ruleset ====="
+          echo "===== Source ====="
           cat /tmp/TopDirect.ruleset
 
-      # =========================
-      # 3. Build GeoSite DAT
-      # =========================
+      # ==========================
+      # Build GeoSite DAT
+      # ==========================
       - name: Build top-direct.dat
         run: |
           rm -rf /tmp/domain-data
@@ -47,37 +44,31 @@ jobs:
           mkdir -p /tmp/domain-data
           mkdir -p /tmp/domain-output
 
-          # DOMAIN              -> full:
-          # DOMAIN-SUFFIX       -> domain:
-          # DOMAIN-KEYWORD      -> keyword:
-          #
-          # 只处理 DOMAIN*，IP-CIDR 不进入 GeoSite DAT。
           awk -F',' '
             /^DOMAIN,/ {
-              value=$2
-              gsub(/\r/, "", value)
-              if (value != "") print "full:" value
+              v=$2
+              gsub(/\r/, "", v)
+              if (v != "") print "full:" v
             }
 
             /^DOMAIN-SUFFIX,/ {
-              value=$2
-              gsub(/\r/, "", value)
-              if (value != "") print "domain:" value
+              v=$2
+              gsub(/\r/, "", v)
+              if (v != "") print "domain:" v
             }
 
             /^DOMAIN-KEYWORD,/ {
-              value=$2
-              gsub(/\r/, "", value)
-              if (value != "") print "keyword:" value
+              v=$2
+              gsub(/\r/, "", v)
+              if (v != "") print "keyword:" v
             }
           ' /tmp/TopDirect.ruleset \
           | sort -u \
           > /tmp/domain-data/top-direct
 
-          echo "===== Converted GeoSite source ====="
+          echo "===== GeoSite source ====="
           cat /tmp/domain-data/top-direct
 
-          echo "===== Clone domain-list-community ====="
           git clone --depth 1 \
             https://github.com/v2fly/domain-list-community.git \
             /tmp/domain-list-community
@@ -94,46 +85,42 @@ jobs:
           cp /tmp/domain-output/top-direct.dat \
             "$GITHUB_WORKSPACE/top-direct.dat"
 
-          echo "===== Generated top-direct.dat ====="
+          echo "===== Generated GeoSite DAT ====="
           ls -lh "$GITHUB_WORKSPACE/top-direct.dat"
 
-      # =========================
-      # 4. Extract IP rules
-      # =========================
-      - name: Extract IP CIDR rules
+      # ==========================
+      # Extract IP
+      # ==========================
+      - name: Extract IP-CIDR
         run: |
           rm -rf /tmp/geoip
           mkdir -p /tmp/geoip
 
           awk -F',' '
             /^IP-CIDR,/ {
-              value=$2
+              v=$2
 
-              # CRLF -> LF
-              gsub(/\r/, "", value)
+              gsub(/\r/, "", v)
 
-              # Clash/Mihomo IPv6 escaping:
-              # 2620\:149\:a44::/48
-              # ->
-              # 2620:149:a44::/48
-              gsub(/\\:/, ":", value)
+              # Restore Clash IPv6 escaping
+              gsub(/\\:/, ":", v)
 
-              if (value != "") print value
+              if (v != "") print v
             }
           ' /tmp/TopDirect.ruleset \
           | sort -u \
           > /tmp/geoip/top-direct-ip.txt
 
-          echo "===== Converted GeoIP source ====="
+          echo "===== GeoIP source ====="
           cat /tmp/geoip/top-direct-ip.txt
 
           echo
-          echo "===== Number of IP rules ====="
+          echo "===== Count ====="
           wc -l /tmp/geoip/top-direct-ip.txt
 
-      # =========================
-      # 5. Build GeoIP DAT
-      # =========================
+      # ==========================
+      # Build GeoIP DAT
+      # ==========================
       - name: Build top-direct-ip.dat
         run: |
           git clone --depth 1 \
@@ -161,54 +148,48 @@ jobs:
                 "type": "v2rayGeoIPDat",
                 "action": "output",
                 "args": {
-                  "outputDir": "/tmp/geoip/output",
-                  "outputName": "top-direct-ip.dat",
-                  "wantedList": [
-                    "TOP-DIRECT-IP"
-                  ]
+                  "outputName": "top-direct-ip.dat"
                 }
               }
             ]
           }
           EOF
 
-          mkdir -p /tmp/geoip/output
-
           echo "===== GeoIP config ====="
           cat config.json
 
           go run ./ -c config.json
 
-          cp /tmp/geoip/output/top-direct-ip.dat \
+          cp output/dat/top-direct-ip.dat \
             "$GITHUB_WORKSPACE/top-direct-ip.dat"
 
-          echo "===== Generated top-direct-ip.dat ====="
+          echo "===== Generated GeoIP DAT ====="
           ls -lh "$GITHUB_WORKSPACE/top-direct-ip.dat"
 
-      # =========================
-      # 6. Basic validation
-      # =========================
-      - name: Validate generated DAT files
+      # ==========================
+      # Validate
+      # ==========================
+      - name: Validate generated files
         run: |
           set -e
 
           test -s top-direct.dat
           test -s top-direct-ip.dat
 
-          echo "===== File type / size ====="
+          echo "===== Files ====="
           ls -lh top-direct.dat top-direct-ip.dat
 
           echo
-          echo "===== GeoSite DAT strings ====="
+          echo "===== GeoSite ====="
           strings top-direct.dat | head -30
 
           echo
-          echo "===== GeoIP DAT strings ====="
+          echo "===== GeoIP ====="
           strings top-direct-ip.dat | head -30
 
-      # =========================
-      # 7. Commit if changed
-      # =========================
+      # ==========================
+      # Commit
+      # ==========================
       - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
