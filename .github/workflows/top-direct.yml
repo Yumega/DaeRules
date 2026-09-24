@@ -13,82 +13,216 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      # ============================================================
+      # Checkout DaeRules
+      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ============================================================
+      # Download source ruleset
+      # ============================================================
       - name: Download TopDirect.ruleset
         run: |
           curl -fsSL \
             "https://raw.githubusercontent.com/Yumega/DaeRules/refs/heads/main/rawrule/TopDirect.ruleset" \
             -o /tmp/TopDirect.ruleset
 
-      - name: Convert Clash ruleset to V2Fly format
+          echo "===== Source ruleset ====="
+          cat /tmp/TopDirect.ruleset
+
+      # ============================================================
+      # Prepare Go
+      # ============================================================
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: false
+
+      # ============================================================
+      # Build domain DAT
+      #
+      # DOMAIN          -> full:
+      # DOMAIN-SUFFIX   -> domain:
+      # DOMAIN-KEYWORD  -> keyword:
+      # ============================================================
+      - name: Prepare domain rules
         run: |
-          mkdir -p /tmp/dlc/data
+          mkdir -p /tmp/domain-data
 
           awk -F',' '
             /^[[:space:]]*DOMAIN,/ {
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
-              print "full:" $2
+              value=$2
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+              print "full:" value
               next
             }
 
             /^[[:space:]]*DOMAIN-SUFFIX,/ {
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
-              print "domain:" $2
+              value=$2
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+              print "domain:" value
               next
             }
 
             /^[[:space:]]*DOMAIN-KEYWORD,/ {
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
-              print "keyword:" $2
+              value=$2
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+              print "keyword:" value
               next
             }
           ' /tmp/TopDirect.ruleset \
+            | sed 's/\r$//' \
             | sed '/^[[:space:]]*$/d' \
             | sort -u \
-            > /tmp/dlc/data/top-direct
+            > /tmp/domain-data/top-direct
 
-          echo "Generated source:"
-          cat /tmp/dlc/data/top-direct
+          echo
+          echo "===== Converted domain rules ====="
+          cat /tmp/domain-data/top-direct
 
-      - name: Clone domain-list-community
+          echo
+          echo "===== Domain rule count ====="
+          wc -l /tmp/domain-data/top-direct
+
+          test -s /tmp/domain-data/top-direct
+
+      - name: Build top-direct.dat
         run: |
           git clone --depth=1 \
             https://github.com/v2fly/domain-list-community.git \
             /tmp/domain-list-community
 
-      - name: Build top-direct.dat
-        run: |
           cd /tmp/domain-list-community
 
           go run ./ \
-            --datapath=/tmp/dlc/data \
+            --datapath=/tmp/domain-data \
             --outputname=top-direct.dat \
-            --outputdir=/tmp/dlc/output
+            --outputdir=/tmp/domain-output
 
-      - name: Install DAT
+          test -s /tmp/domain-output/top-direct.dat
+
+          echo
+          echo "===== Domain DAT ====="
+          ls -lh /tmp/domain-output/top-direct.dat
+
+      # ============================================================
+      # Build IP DAT
+      #
+      # IP-CIDR / IP-CIDR6
+      # Remove Clash ",no-resolve"
+      # Restore escaped IPv6 "\:"
+      # ============================================================
+      - name: Prepare IP rules
         run: |
-          cp /tmp/dlc/output/top-direct.dat ./top-direct.dat
+          mkdir -p /tmp/geoip
 
-      - name: Verify DAT
+          awk -F',' '
+            /^[[:space:]]*IP-CIDR,/ {
+              value=$2
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+              gsub(/\\:/, ":", value)
+              print value
+              next
+            }
+
+            /^[[:space:]]*IP-CIDR6,/ {
+              value=$2
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+              gsub(/\\:/, ":", value)
+              print value
+              next
+            }
+          ' /tmp/TopDirect.ruleset \
+            | sed 's/\r$//' \
+            | sed '/^[[:space:]]*$/d' \
+            | sort -u \
+            > /tmp/geoip/top-direct-ip.txt
+
+          echo
+          echo "===== Converted IP rules ====="
+          cat /tmp/geoip/top-direct-ip.txt
+
+          echo
+          echo "===== IP rule count ====="
+          wc -l /tmp/geoip/top-direct-ip.txt
+
+          test -s /tmp/geoip/top-direct-ip.txt
+
+      - name: Build top-direct-ip.dat
         run: |
-          ls -lh ./top-direct.dat
+          git clone --depth=1 \
+            https://github.com/v2fly/geoip.git \
+            /tmp/geoip-repo
 
-          test -s ./top-direct.dat
+          cat > /tmp/geoip-repo/top-direct-config.json <<'EOF'
+          {
+            "input": [
+              {
+                "type": "text",
+                "action": "add",
+                "args": {
+                  "name": "top-direct-ip",
+                  "uri": "/tmp/geoip/top-direct-ip.txt"
+                }
+              }
+            ],
+            "output": [
+              {
+                "type": "v2rayGeoIPDat",
+                "action": "output",
+                "args": {
+                  "outputDir": "/tmp/geoip-output",
+                  "outputName": "top-direct-ip.dat",
+                  "wantedList": [
+                    "top-direct-ip"
+                  ]
+                }
+              }
+            ]
+          }
+          EOF
 
-          echo "DAT generated successfully."
+          cd /tmp/geoip-repo
 
+          go run . -c top-direct-config.json
+
+          test -s /tmp/geoip-output/top-direct-ip.dat
+
+          echo
+          echo "===== IP DAT ====="
+          ls -lh /tmp/geoip-output/top-direct-ip.dat
+
+      # ============================================================
+      # Install generated files
+      # ============================================================
+      - name: Install DAT files
+        run: |
+          cp /tmp/domain-output/top-direct.dat ./top-direct.dat
+          cp /tmp/geoip-output/top-direct-ip.dat ./top-direct-ip.dat
+
+          echo
+          echo "===== Final files ====="
+          ls -lh \
+            ./top-direct.dat \
+            ./top-direct-ip.dat
+
+      # ============================================================
+      # Commit only when changed
+      # ============================================================
       - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add top-direct.dat
+          git add \
+            top-direct.dat \
+            top-direct-ip.dat
 
           if git diff --cached --quiet; then
             echo "No changes."
           else
-            git commit -m "chore: update top-direct.dat"
+            git commit -m "chore: update top-direct DAT"
             git push
           fi
