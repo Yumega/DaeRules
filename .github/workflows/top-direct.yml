@@ -1,0 +1,94 @@
+name: TopDirect DAT
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download TopDirect.ruleset
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/Yumega/DaeRules/refs/heads/main/rawrule/TopDirect.ruleset" \
+            -o /tmp/TopDirect.ruleset
+
+      - name: Convert Clash ruleset to V2Fly format
+        run: |
+          mkdir -p /tmp/dlc/data
+
+          awk -F',' '
+            /^[[:space:]]*DOMAIN,/ {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+              print "full:" $2
+              next
+            }
+
+            /^[[:space:]]*DOMAIN-SUFFIX,/ {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+              print "domain:" $2
+              next
+            }
+
+            /^[[:space:]]*DOMAIN-KEYWORD,/ {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+              print "keyword:" $2
+              next
+            }
+          ' /tmp/TopDirect.ruleset \
+            | sed '/^[[:space:]]*$/d' \
+            | sort -u \
+            > /tmp/dlc/data/top-direct
+
+          echo "Generated source:"
+          cat /tmp/dlc/data/top-direct
+
+      - name: Clone domain-list-community
+        run: |
+          git clone --depth=1 \
+            https://github.com/v2fly/domain-list-community.git \
+            /tmp/domain-list-community
+
+      - name: Build top-direct.dat
+        run: |
+          cd /tmp/domain-list-community
+
+          go run ./ \
+            --datapath=/tmp/dlc/data \
+            --outputname=top-direct.dat \
+            --outputdir=/tmp/dlc/output
+
+      - name: Install DAT
+        run: |
+          cp /tmp/dlc/output/top-direct.dat ./top-direct.dat
+
+      - name: Verify DAT
+        run: |
+          ls -lh ./top-direct.dat
+
+          test -s ./top-direct.dat
+
+          echo "DAT generated successfully."
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add top-direct.dat
+
+          if git diff --cached --quiet; then
+            echo "No changes."
+          else
+            git commit -m "chore: update top-direct.dat"
+            git push
+          fi
